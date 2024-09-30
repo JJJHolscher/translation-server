@@ -46,21 +46,28 @@
           src = ./.;
           npmDepsHash = "sha256-JHoBxUybs1GGRxEVG5GgX2mOCplTgR5dcPjnR42SEbY=";
           makeCacheWritable = true;
-	  dontNpmBuild = true;
-         
-	  postInstall = ''
-	    modules="$out/lib/node_modules/translation-server/modules"
-	    mkdir "$modules"
+	      dontNpmBuild = true;
+             
+          postInstall = ''
+            modules="$out/lib/node_modules/translation-server/modules"
+            mkdir "$modules"
             ln -s ${translate} $modules/translate
             ln -s ${translators} $modules/translators
             ln -s ${utilities} $modules/utilities
             ln -s ${zotero-schema} $modules/zotero-schema
-	  '';
-         
-          packageJson = "${src}/package.json";
-         
-          # Make the main script executable
+
+            mkdir "$out/bin"
+            cat > $out/bin/zotero-translation-server <<'EOF'
+            #!/usr/bin/env bash
+            cd "$(dirname "$0")/../lib/node_modules/translation-server"
+            exec ${pkgs.nodejs}/bin/node src/server.js "$@"
+            EOF
+
+            chmod +x $out/bin/zotero-translation-server
+          '';
+
           executable = true;
+          packageJson = "${src}/package.json";
          
           meta = with pkgs.lib; {
             description = "Zotero Translation Server";
