@@ -8,79 +8,89 @@
 
   outputs = { self, nixpkgs, flake-utils, ... }:
     flake-utils.lib.eachDefaultSystem (system:
-      let
-        pkgs = import nixpkgs { inherit system; };
+    let
+      pkgs = import nixpkgs { inherit system; };
+      # Translation Server Version
+      translationServerVersion = "0a9199e0673452218382aa5a979ec9e2107ca9a1";
 
-        # Translation Server Version
-        translationServerVersion = "c4f03e78e1c50dc61a2b8e5a452284581d9ad0e3"; # Specific commit for reproducibility
+    in {
+      packages.default = pkgs.buildNpmPackage rec {
+        pname = "zotero-translation-server";
+        version = translationServerVersion;
        
-        translate = pkgs.fetchFromGitHub {
-          owner = "zotero";
-          repo = "translate";
-          rev = "master";              # Specify the commit or branch
-          sha256 = "sha256-dzkMnGEcFtJ3S10LtLVpq4d5O4f9+Jk12lrXhRegtPk=";
+        src = builtins.fetchGit {
+          url = "https://github.com/zotero/translation-server";
+          submodules = true;
+          rev = translationServerVersion;
         };
-        translators = pkgs.fetchFromGitHub {
-          owner = "zotero";
-          repo = "translators";
-          rev = "master";              # Specify the commit or branch
-          sha256 = "sha256-EH0DU/06pleNKv1A2/VIu+KZ85cpbRGSt3hqXUaEoLI=";
+        npmDepsHash = "sha256-JHoBxUybs1GGRxEVG5GgX2mOCplTgR5dcPjnR42SEbY=";
+        makeCacheWritable = true;
+	    dontNpmBuild = true;
+           
+        postInstall = ''
+          mkdir "$out/bin"
+          cat > $out/bin/zotero-translation-server <<'EOF'
+          #!/usr/bin/env bash
+          cd "$(dirname "$0")/../lib/node_modules/translation-server"
+          exec ${pkgs.nodejs}/bin/node src/server.js "$@"
+          EOF
+
+          chmod +x $out/bin/zotero-translation-server
+        '';
+
+        executable = true;
+        packageJson = "${src}/package.json";
+       
+        meta = with pkgs.lib; {
+          description = "Zotero Translation Server";
+          homepage = "https://github.com/zotero/translation-server";
+          license = licenses.mit;
+          platforms = platforms.all;
         };
-        utilities = pkgs.fetchFromGitHub {
-          owner = "zotero";
-          repo = "utilities";
-          rev = "master";              # Specify the commit or branch
-          sha256 = "sha256-Pr6Htc1CdNubcZSt3ASwAYagJdPAbdA1a9RXyiqZSJY=";
-        };
-        zotero-schema = pkgs.fetchFromGitHub {
-          owner = "zotero";
-          repo = "zotero-schema";
-          rev = "master";              # Specify the commit or branch
-          sha256 = "sha256-P+4MXUD3ip3DceyUqMh+hgmHwaJqF0jUuuncliFdoYE=";
-        };
+      };
+      apps.default = flake-utils.lib.mkApp {
+        drv = self.packages.${system}.default;
+        name = "zotero-translation-server";
+      };
+
+      nixosModules.zotero-translation-server = {config, lib, ... }:
+      let cfg = config.services.zotero-translation-server;
       in {
-        packages.default = pkgs.buildNpmPackage rec {
-          pname = "zotero-translation-server";
-          version = translationServerVersion;
-         
-          src = ./.;
-          npmDepsHash = "sha256-JHoBxUybs1GGRxEVG5GgX2mOCplTgR5dcPjnR42SEbY=";
-          makeCacheWritable = true;
-	      dontNpmBuild = true;
-             
-          postInstall = ''
-            modules="$out/lib/node_modules/translation-server/modules"
-            mkdir "$modules"
-            ln -s ${translate} $modules/translate
-            ln -s ${translators} $modules/translators
-            ln -s ${utilities} $modules/utilities
-            ln -s ${zotero-schema} $modules/zotero-schema
-
-            mkdir "$out/bin"
-            cat > $out/bin/zotero-translation-server <<'EOF'
-            #!/usr/bin/env bash
-            cd "$(dirname "$0")/../lib/node_modules/translation-server"
-            exec ${pkgs.nodejs}/bin/node src/server.js "$@"
-            EOF
-
-            chmod +x $out/bin/zotero-translation-server
-          '';
-
-          executable = true;
-          packageJson = "${src}/package.json";
-         
-          meta = with pkgs.lib; {
-            description = "Zotero Translation Server";
-            homepage = "https://github.com/zotero/translation-server";
-            license = licenses.mit;
-            platforms = platforms.all;
+        options.services.zotero-translation-server = {
+          enable = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = ''
+              Start zotero's translation server on port 1969.
+              Query webpages with
+              `curl -d 'https://www.ncbi.nlm.nih.gov/pubmed/?term=crispr' \
+                -H 'Content-Type: text/plain' http://127.0.0.1:1969/web`
+              or other non-webpages with
+              `curl -d 10.2307/4486062 -H 'Content-Type: text/plain' http://127.0.0.1:1969/search`
+            '';
           };
         };
-        apps.default = flake-utils.lib.mkApp {
-          drv = self.packages.${system}.default;
-          name = "zotero-translation-server";
+   
+        # Define the configuration.
+        config = lib.mkIf cfg.enable {
+          # Add dependencies for the search service.
+          # environment.systemPackages = [ meiliwatch ];
+   
+          # Systemd service for the directory watcher.
+          systemd.services.zotero-translation-server = {
+            description = "have Zotero's translation server liston on port 1969";
+            wants = [ "network-online.target" ]; # Ensure Meilisearch is up before starting
+            after = [ "network-online.target" ];
+            serviceConfig = {
+              ExecStart = self.packages.${system}.default;
+              Restart = "on-failure";
+              RestartSec = 5;
+            };
+            wantedBy = [ "multi-user.target" ];
+          };
         };
-      }
-    );
+      };
+    }
+  );
 }
 
